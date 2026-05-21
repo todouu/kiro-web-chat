@@ -11,18 +11,45 @@ st.markdown(
     """
 <style>
     .stApp { background-color: #1a1a2e; }
-    .mcp-card {
-        background-color: #2d2d44;
-        border-radius: 12px;
-        padding: 20px;
-        margin: 12px 0;
-        border: 1px solid #3d3d5c;
-    }
 </style>
 """,
     unsafe_allow_html=True,
 )
 
+
+def render_server(server):
+    """Render a single MCP server card."""
+    status_icon = "🟢" if not server.disabled else "⚫"
+    transport_badge = "stdio" if server.transport == "stdio" else "HTTP"
+    disabled_label = " *(disabled)*" if server.disabled else ""
+
+    with st.expander(
+        f"{status_icon} **{server.name}** — `{transport_badge}`{disabled_label}",
+        expanded=False,
+    ):
+        st.markdown(f"**Transport:** `{server.transport}`")
+        st.markdown(f"**Command:** `{server.command}`")
+
+        if server.env:
+            st.markdown("**Environment variables:**")
+            for key, val in server.env.items():
+                # Mask sensitive values
+                display_val = val if not any(
+                    s in key.upper() for s in ["TOKEN", "KEY", "SECRET", "PASSWORD"]
+                ) else "••••••"
+                st.code(f"{key}={display_val}", language=None)
+
+        if server.auto_approve:
+            st.markdown(f"**Auto-approved tools:** `{'`, `'.join(server.auto_approve)}`")
+
+        if server.disabled_tools:
+            st.markdown(f"**Disabled tools:** `{'`, `'.join(server.disabled_tools)}`")
+
+        if server.disabled:
+            st.warning("This server is disabled.")
+
+
+# --- Page content ---
 st.markdown("# 🔌 MCP Servers")
 st.markdown(
     "Model Context Protocol (MCP) servers provide tools that agents use to interact with "
@@ -67,7 +94,7 @@ else:
         st.markdown("")
 
         for server in global_servers:
-            _render_server(server)
+            render_server(server)
 
     if workspace_servers:
         st.markdown("### 📁 Workspace MCP Servers")
@@ -75,41 +102,8 @@ else:
         st.markdown("")
 
         for server in workspace_servers:
-            _render_server(server)
+            render_server(server)
 
     # Summary
     st.markdown("---")
     st.caption(f"Total: {len(servers)} server(s) — {len(global_servers)} global, {len(workspace_servers)} workspace")
-
-
-def _render_server(server):
-    """Render a single MCP server card."""
-    # Status indicator
-    status_icon = "🟢" if not server.disabled else "⚫"
-    transport_badge = "stdio" if server.transport == "stdio" else "HTTP"
-    disabled_label = " *(disabled)*" if server.disabled else ""
-
-    with st.expander(
-        f"{status_icon} **{server.name}** — `{transport_badge}`{disabled_label}",
-        expanded=False,
-    ):
-        st.markdown(f"**Transport:** `{server.transport}`")
-        st.markdown(f"**Command:** `{server.command}`")
-
-        if server.env:
-            st.markdown("**Environment variables:**")
-            for key, val in server.env.items():
-                # Mask sensitive values
-                display_val = val if not any(
-                    s in key.upper() for s in ["TOKEN", "KEY", "SECRET", "PASSWORD"]
-                ) else "••••••"
-                st.code(f"{key}={display_val}", language=None)
-
-        if server.auto_approve:
-            st.markdown(f"**Auto-approved tools:** `{'`, `'.join(server.auto_approve)}`")
-
-        if server.disabled_tools:
-            st.markdown(f"**Disabled tools:** `{'`, `'.join(server.disabled_tools)}`")
-
-        if server.disabled:
-            st.warning("This server is disabled.")

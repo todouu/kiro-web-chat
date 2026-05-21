@@ -1,10 +1,10 @@
 """Skills configuration — reads real skills from Kiro directories.
 
-Skills are markdown files with YAML frontmatter located in:
-  - ~/.kiro/skills/       (global, available across all workspaces)
-  - .kiro/skills/         (workspace-scoped)
+Skills are stored as subdirectories under:
+  - ~/.kiro/skills/<skill-name>/SKILL.md       (global)
+  - .kiro/skills/<skill-name>/SKILL.md         (workspace-scoped)
 
-Each .md file has frontmatter like:
+Each SKILL.md has YAML frontmatter:
 ---
 name: My Skill
 description: What this skill does
@@ -12,26 +12,25 @@ description: What this skill does
 (body with full instructions)
 """
 
-import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
 @dataclass
 class Skill:
-    """A skill parsed from a .kiro/skills/*.md file."""
+    """A skill parsed from a .kiro/skills/<name>/SKILL.md file."""
 
     id: str
     name: str
     description: str
     file_path: str
     scope: str  # "global" or "workspace"
-    content: str = ""  # Full markdown body (loaded on demand)
+    content: str = ""  # Full markdown body
 
 
-def _parse_frontmatter(file_path: Path) -> dict:
-    """Parse YAML frontmatter from a markdown file."""
+def _parse_skill_md(file_path: Path) -> dict:
+    """Parse YAML frontmatter from a SKILL.md file."""
     try:
         text = file_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -57,25 +56,31 @@ def _parse_frontmatter(file_path: Path) -> dict:
 
 
 def _scan_skills_dir(directory: Path, scope: str) -> list[Skill]:
-    """Scan a directory for .md skill files."""
+    """Scan a skills directory for <skill-name>/SKILL.md files."""
     skills = []
 
     if not directory.exists():
         return skills
 
-    for md_file in sorted(directory.glob("*.md")):
-        if md_file.name.startswith("_") or md_file.name.lower() == "readme.md":
+    for skill_dir in sorted(directory.iterdir()):
+        if not skill_dir.is_dir():
+            continue
+        if skill_dir.name.startswith("_") or skill_dir.name.startswith("."):
             continue
 
-        meta = _parse_frontmatter(md_file)
-        name = meta.get("name", md_file.stem.replace("-", " ").replace("_", " ").title())
+        skill_file = skill_dir / "SKILL.md"
+        if not skill_file.exists():
+            continue
+
+        meta = _parse_skill_md(skill_file)
+        name = meta.get("name", skill_dir.name.replace("-", " ").replace("_", " ").title())
         description = meta.get("description", "")
 
         skill = Skill(
-            id=md_file.stem,
+            id=skill_dir.name,
             name=name,
             description=description,
-            file_path=str(md_file),
+            file_path=str(skill_file),
             scope=scope,
             content=meta.get("_body", ""),
         )
@@ -88,16 +93,15 @@ def load_skills(workspace_path: Path | None = None) -> list[Skill]:
     """
     Load all skills from global and workspace directories.
 
-    Args:
-        workspace_path: Optional workspace path to also scan for .kiro/skills/
+    Scans ~/.kiro/skills/<name>/SKILL.md and .kiro/skills/<name>/SKILL.md
     """
     skills = []
 
-    # Global skills: ~/.kiro/skills/
+    # Global skills: ~/.kiro/skills/*/SKILL.md
     global_dir = Path.home() / ".kiro" / "skills"
     skills.extend(_scan_skills_dir(global_dir, "global"))
 
-    # Workspace skills: <workspace>/.kiro/skills/
+    # Workspace skills: <workspace>/.kiro/skills/*/SKILL.md
     if workspace_path:
         ws_dir = workspace_path / ".kiro" / "skills"
         skills.extend(_scan_skills_dir(ws_dir, "workspace"))
