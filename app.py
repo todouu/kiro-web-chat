@@ -2,8 +2,13 @@
 Kiro Web-Like: Main Streamlit Application
 
 A browser-based interface for interacting with Kiro CLI agents via ACP
-(Agent Client Protocol), featuring per-user isolated workspaces and
-persistent multi-turn conversation sessions.
+(Agent Client Protocol). Users select from pre-configured agents and
+chat within persistent multi-turn sessions.
+
+Pages:
+  - Chat (this file, main page)
+  - Skills (pages/skills.py)
+  - MCP (pages/mcp.py)
 """
 
 import time
@@ -11,7 +16,8 @@ import time
 import streamlit as st
 
 from src.agent import ACPClient, AgentStatus, acp_client
-from src.auth import AuthManager, Session
+from src.agents_config import list_agents, get_agent
+from src.auth import AuthManager
 from src.config import config
 from src.workspace import WorkspaceManager
 
@@ -27,44 +33,33 @@ st.set_page_config(
 st.markdown(
     """
 <style>
-    /* Dark theme styling similar to Kiro Web */
-    .stApp {
-        background-color: #1a1a2e;
-    }
-    .main-header {
-        color: #e0e0e0;
-        font-size: 1.5rem;
-        font-weight: 600;
-        padding: 0.5rem 0;
-    }
-    .chat-message-user {
+    .stApp { background-color: #1a1a2e; }
+    .agent-card {
         background-color: #2d2d44;
-        border-radius: 12px;
-        padding: 12px 16px;
-        margin: 8px 0;
-        border-left: 3px solid #6366f1;
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin: 6px 0;
+        border: 1px solid #3d3d5c;
+        cursor: pointer;
     }
-    .chat-message-assistant {
-        background-color: #1e1e36;
-        border-radius: 12px;
-        padding: 12px 16px;
-        margin: 8px 0;
-        border-left: 3px solid #22c55e;
+    .agent-card-selected {
+        background-color: #2d2d44;
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin: 6px 0;
+        border: 2px solid #6366f1;
     }
-    .status-badge {
+    .status-dot {
         display: inline-block;
-        padding: 2px 8px;
-        border-radius: 12px;
-        font-size: 0.75rem;
-        font-weight: 500;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        margin-right: 6px;
     }
-    .status-running { background-color: #22c55e33; color: #22c55e; }
-    .status-idle { background-color: #6366f133; color: #6366f1; }
-    .status-stopped { background-color: #ef444433; color: #ef4444; }
-    .sidebar-section {
-        border-bottom: 1px solid #333;
-        padding: 12px 0;
-    }
+    .status-connected { background-color: #22c55e; }
+    .status-disconnected { background-color: #6b7280; }
+    .status-running { background-color: #eab308; }
+    .status-error { background-color: #ef4444; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -85,8 +80,7 @@ def init_session_state():
         "workspace": None,
         "messages": [],
         "acp_connected": False,
-        "mode": "vibe",
-        "repos": [],
+        "selected_agent": "auto",
         "show_register": False,
     }
     for key, value in defaults.items():
@@ -185,7 +179,7 @@ def render_register_form():
 
 # --- Main Application ---
 def render_sidebar():
-    """Render the application sidebar."""
+    """Render the application sidebar with agent selection."""
     with st.sidebar:
         # User info
         st.markdown(f"### 👤 {st.session_state.user.display_name}")
@@ -193,80 +187,55 @@ def render_sidebar():
 
         st.markdown("---")
 
-        # Mode selector
-        st.markdown("#### Mode")
-        mode = st.radio(
-            "Select mode",
-            options=["vibe", "autonomous"],
-            format_func=lambda x: "🎯 Vibe (Collaborative)" if x == "vibe" else "🚀 Autonomous",
-            index=0 if st.session_state.mode == "vibe" else 1,
-            label_visibility="collapsed",
-        )
-        if mode != st.session_state.mode:
-            st.session_state.mode = mode
+        # Agent selection
+        st.markdown("#### Select Agent")
+        agents = list_agents()
 
-        if mode == "vibe":
-            st.caption("Work interactively with the agent.")
-        else:
-            st.caption("Agent works independently, opens PRs.")
+        for agent in agents:
+            is_selected = st.session_state.selected_agent == agent.id
+            card_class = "agent-card-selected" if is_selected else "agent-card"
 
-        st.markdown("---")
+            if st.button(
+                f"{agent.icon} {agent.name}",
+                key=f"agent_{agent.id}",
+                use_container_width=True,
+                type="primary" if is_selected else "secondary",
+            ):
+                if st.session_state.selected_agent != agent.id:
+                    st.session_state.selected_agent = agent.id
+                    # Close current ACP session when switching agents
+                    conn = acp_client.get_connection(st.session_state.username)
+                    if conn:
+                        acp_client.close_session(conn)
+                    st.session_state.messages = []
+                    st.session_state.acp_connected = False
+                    st.rerun()
 
-        # Repository management
-        st.markdown("#### Repositories")
-        repo_url = st.text_input(
-            "Add Repository",
-            placeholder="https://github.com/owner/repo",
-            label_visibility="collapsed",
-        )
-        col1, col2 = st.columns(2)
-        with col1:
-            branch = st.text_input("Branch", value="main", label_visibility="collapsed")
-        with col2:
-            if st.button("Clone", use_container_width=True):
-                if repo_url and st.session_state.workspace:
-                    with st.spinner("Cloning repository..."):
-                        try:
-                            repo_path = workspace_manager.clone_repo(
-                                st.session_state.workspace, repo_url, branch
-                            )
-                            repo_name = repo_path.name
-                            if repo_name not in st.session_state.repos:
-                                st.session_state.repos.append(repo_name)
-                            st.success(f"Cloned: {repo_name}")
-                        except Exception as e:
-                            st.error(f"Clone failed: {e}")
-
-        # Show cloned repos
-        if st.session_state.repos:
-            for repo in st.session_state.repos:
-                st.markdown(f"📁 `{repo}`")
+        # Show selected agent details
+        selected = get_agent(st.session_state.selected_agent)
+        if selected:
+            st.markdown("---")
+            st.caption(selected.description)
 
         st.markdown("---")
 
-        # Session & Agent info
-        st.markdown("#### Session")
-        if st.session_state.session:
-            st.caption(f"ID: `{st.session_state.session.session_id[:8]}...`")
-
-        # Agent status from ACP
+        # Agent status
         username = st.session_state.username
         status = acp_client.get_status(username)
-        status_display = {
+        status_map = {
             AgentStatus.RUNNING: ("🟢", "Running"),
             AgentStatus.IDLE: ("🔵", "Connected"),
             AgentStatus.INITIALIZING: ("🟡", "Connecting..."),
-            AgentStatus.STOPPED: ("🔴", "Disconnected"),
+            AgentStatus.STOPPED: ("⚪", "Disconnected"),
             AgentStatus.ERROR: ("🟠", "Error"),
         }
-        icon, label = status_display.get(status, ("⚪", "Unknown"))
-        st.markdown(f"Agent: {icon} {label}")
+        icon, label = status_map.get(status, ("⚪", "Unknown"))
+        st.markdown(f"**Status:** {icon} {label}")
 
         st.markdown("---")
 
-        # Actions
+        # Session actions
         if st.button("🗑️ Clear Chat", use_container_width=True):
-            # Close ACP session and start fresh
             conn = acp_client.get_connection(username)
             if conn:
                 acp_client.close_session(conn)
@@ -275,9 +244,7 @@ def render_sidebar():
             st.rerun()
 
         if st.button("🔄 New Session", use_container_width=True):
-            # Disconnect ACP and create a new workspace session
             acp_client.disconnect(username)
-
             session = auth_manager.create_session(st.session_state.username)
             workspace = workspace_manager.create_workspace(
                 st.session_state.username, session.session_id
@@ -285,14 +252,11 @@ def render_sidebar():
             st.session_state.session = session
             st.session_state.workspace = workspace
             st.session_state.messages = []
-            st.session_state.repos = []
             st.session_state.acp_connected = False
             st.rerun()
 
         if st.button("🚪 Sign Out", use_container_width=True):
-            # Full cleanup
             acp_client.disconnect(username)
-
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             init_session_state()
@@ -301,38 +265,35 @@ def render_sidebar():
 
 def render_chat():
     """Render the main chat interface."""
-    # Header
-    mode_label = "Vibe" if st.session_state.mode == "vibe" else "Autonomous"
-    st.markdown(f"### 🤖 Kiro Agent — {mode_label} Mode")
+    selected = get_agent(st.session_state.selected_agent)
+    agent_label = f"{selected.icon} {selected.name}" if selected else "🤖 Agent"
+    st.markdown(f"### {agent_label}")
 
     if not config.kiro_api_key:
         st.warning(
             "⚠️ KIRO_API_KEY not configured. Set it in `.env` to enable agent functionality."
         )
 
-    # Chat messages container
+    # Chat messages
     chat_container = st.container()
-
     with chat_container:
         for msg in st.session_state.messages:
             if msg["role"] == "user":
                 with st.chat_message("user"):
                     st.markdown(msg["content"])
             else:
-                with st.chat_message("assistant", avatar="🤖"):
+                with st.chat_message("assistant", avatar=selected.icon if selected else "🤖"):
                     st.markdown(msg["content"])
 
     # Chat input
-    if prompt := st.chat_input("Describe what you want to build or ask a question..."):
-        # Add user message
+    if prompt := st.chat_input("Describe what you need..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Send to agent via ACP
-        with st.chat_message("assistant", avatar="🤖"):
-            with st.spinner("Kiro is thinking..."):
+        with st.chat_message("assistant", avatar=selected.icon if selected else "🤖"):
+            with st.spinner("Thinking..."):
                 response = execute_agent_prompt(prompt)
             st.markdown(response)
 
@@ -345,115 +306,65 @@ def ensure_acp_connection():
     username = st.session_state.username
     workspace_path = st.session_state.workspace.path
 
-    # Check if already connected
     conn = acp_client.get_connection(username)
     if conn and conn.status in (AgentStatus.IDLE, AgentStatus.RUNNING):
         return conn
 
-    # Connect (spawns kiro-cli acp + initialize handshake)
     conn = acp_client.connect(username, workspace_path)
-
-    # Create a new ACP session for conversation
     acp_client.new_session(conn)
     st.session_state.acp_connected = True
-
     return conn
 
 
 def execute_agent_prompt(prompt: str) -> str:
-    """
-    Execute a prompt via Kiro CLI ACP protocol.
-
-    Unlike headless mode, ACP maintains conversation context automatically.
-    Each message is sent within the same session, so the agent remembers
-    previous messages without us having to re-send history.
-    """
+    """Execute a prompt via Kiro CLI ACP protocol with the selected agent."""
     if not config.kiro_api_key:
         return (
             "⚠️ **Agent not configured.**\n\n"
-            "Please set `KIRO_API_KEY` in your `.env` file to enable Kiro CLI agent.\n\n"
-            "```bash\n"
-            "export KIRO_API_KEY=your_api_key_here\n"
-            "```"
+            "Please set `KIRO_API_KEY` in your `.env` file.\n\n"
+            "```bash\nexport KIRO_API_KEY=your_api_key_here\n```"
         )
 
     if not st.session_state.workspace:
         return "❌ No workspace available. Please create a new session."
 
     try:
-        # Ensure ACP connection is live
         conn = ensure_acp_connection()
-
-        # Send prompt — ACP keeps multi-turn context server-side
         response = acp_client.prompt(conn, prompt)
         return response
 
     except FileNotFoundError as e:
         return (
-            f"❌ **Kiro CLI not found**\n\n"
-            f"{e}\n\n"
-            f"Install it from: https://kiro.dev/cli/\n\n"
-            f"Or set `KIRO_CLI_PATH` in `.env` if it's in a custom location."
+            f"❌ **Kiro CLI not found**\n\n{e}\n\n"
+            f"Install: https://kiro.dev/cli/\n"
+            f"Or set `KIRO_CLI_PATH` in `.env`."
         )
 
     except ConnectionError as e:
         st.session_state.acp_connected = False
-        return (
-            f"❌ **Connection lost to Kiro agent**\n\n"
-            f"{e}\n\n"
-            f"The agent process may have crashed. Try sending another message to reconnect."
-        )
+        return f"❌ **Connection lost**\n\n{e}\n\nTry sending another message to reconnect."
 
     except TimeoutError:
-        return (
-            "⏳ **Agent timed out**\n\n"
-            "The agent took too long to respond (>3 min). "
-            "Try a simpler prompt or check your network connection."
-        )
+        return "⏳ **Timed out** — try a simpler prompt or check network."
 
     except RuntimeError as e:
         return (
-            f"❌ **Agent error**\n\n"
-            f"{e}\n\n"
-            f"**Troubleshooting:**\n"
-            f"- Check that `KIRO_API_KEY` is valid and not expired\n"
-            f"- Ensure Kiro CLI is v1.25+ (ACP support required)\n"
-            f"- Test manually: `kiro-cli acp` (should start and wait for JSON-RPC input)\n"
+            f"❌ **Agent error**\n\n{e}\n\n"
+            f"Check: valid KIRO_API_KEY, Kiro CLI v1.25+, `kiro-cli acp` works."
         )
 
     except Exception as e:
         return f"❌ Unexpected error: {type(e).__name__}: {e}"
 
 
-def render_workspace_panel():
-    """Render workspace file browser panel (optional right panel)."""
-    if st.session_state.workspace and st.session_state.workspace.exists:
-        workspace_path = st.session_state.workspace.path
-        files = list(workspace_path.rglob("*"))
-        if files:
-            st.markdown("#### 📂 Workspace Files")
-            for f in sorted(files)[:50]:  # Limit display
-                if f.is_file():
-                    rel_path = f.relative_to(workspace_path)
-                    st.caption(f"📄 {rel_path}")
-
-
-# --- Main App Layout ---
+# --- Main ---
 def main():
     """Main application entry point."""
     if not st.session_state.authenticated:
         render_login_page()
     else:
         render_sidebar()
-
-        # Main content area
-        col_chat, col_files = st.columns([3, 1])
-
-        with col_chat:
-            render_chat()
-
-        with col_files:
-            render_workspace_panel()
+        render_chat()
 
 
 if __name__ == "__main__":
