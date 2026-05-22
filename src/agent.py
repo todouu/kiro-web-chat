@@ -23,13 +23,14 @@ from typing import Any
 
 from src.config import config
 
-# Configure logging to output to stderr (visible in streamlit terminal)
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stderr,
-)
+# Configure logging — only our module at INFO level, suppress other noise
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(handler)
+    logger.propagate = False
 
 
 class AgentMode(str, Enum):
@@ -106,12 +107,10 @@ class ACPClient:
                 if not line:
                     continue
 
-                logger.debug(f"ACP stdout: {line[:200]}")
-
                 try:
                     msg = json.loads(line)
                 except json.JSONDecodeError:
-                    logger.warning(f"Non-JSON output from kiro-cli acp: {line[:200]}")
+                    logger.warning(f"Non-JSON from kiro-cli: {line[:100]}")
                     continue
 
                 # JSON-RPC response (has "id")
@@ -120,14 +119,12 @@ class ACPClient:
                 # JSON-RPC notification (no "id", has "method")
                 elif "method" in msg:
                     conn._notification_queue.put(msg)
-                else:
-                    logger.debug(f"Unknown ACP message: {msg}")
 
         except (ValueError, OSError) as e:
-            logger.warning(f"ACP reader loop ended: {e}")
+            logger.warning(f"ACP reader ended: {e}")
         finally:
             conn.status = AgentStatus.STOPPED
-            logger.info(f"ACP reader loop finished for {conn.username}")
+            logger.info(f"ACP process ended for {conn.username}")
 
     def _stderr_loop(self, conn: ACPConnection):
         """Background thread: read stderr from the ACP process and log it."""
